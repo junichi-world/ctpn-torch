@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import torch
+import tensorflow as tf
 
 from .config import cfg
 from lib.utils.blob import im_list_to_blob
@@ -45,14 +45,12 @@ def test_ctpn(net, im, boxes=None):
     else:
         raise ValueError("Only RPN mode is supported")
 
-    device = next(net.parameters()).device
-    with torch.no_grad():
-        rois, _, _ = net.predict_rois(
-            torch.from_numpy(blobs["data"]).to(device=device, dtype=torch.float32),
-            torch.from_numpy(blobs["im_info"]).to(device=device, dtype=torch.float32),
-            cfg_key="TEST",
-        )
-    rois = rois.detach().cpu().numpy()
+    rois, _, _ = net.predict_rois(
+        tf.convert_to_tensor(blobs["data"], dtype=tf.float32),
+        tf.convert_to_tensor(blobs["im_info"], dtype=tf.float32),
+        cfg_key="TEST",
+    )
+    rois = rois.numpy()
 
     scores = rois[:, 0]
     assert len(im_scales) == 1, "Only single-image batch implemented"

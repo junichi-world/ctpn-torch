@@ -1,15 +1,11 @@
 from __future__ import print_function
 
-import glob
 import os
 import os.path as osp
-import re
 import sys
 
 import numpy as np
-import torch
-from torch.nn.utils import clip_grad_norm_
-from torch.utils.tensorboard import SummaryWriter
+import tensorflow as tf
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
@@ -24,7 +20,7 @@ _DEBUG = False
 
 
 class SolverWrapper(object):
-    def __init__(self, network, imdb, roidb, output_dir, logdir, pretrained_model=None, require_cuda=False):
+    def __init__(self, network, imdb, roidb, output_dir, logdir, pretrained_model=None):
         self.net = network
         self.imdb = imdb
         self.roidb = roidb
@@ -36,75 +32,45 @@ class SolverWrapper(object):
             self.bbox_means, self.bbox_stds = rdl_roidb.add_bbox_regression_targets(roidb)
         print("done")
 
-        if require_cuda and not torch.cuda.is_available():
-            raise RuntimeError(
-                "CUDA is not available. Install CUDA-enabled PyTorch and verify GPU drivers. "
-                "Current torch version: {}, torch.version.cuda: {}".format(torch.__version__, torch.version.cuda)
-            )
-
-        self.device = torch.device(f"cuda:{cfg.GPU_ID}" if torch.cuda.is_available() else "cpu")
-        self.net.to(self.device)
-
         self.lr = float(cfg.TRAIN.LEARNING_RATE)
-        self.global_step = 0
+        self.global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name="global_step")
         self.optimizer = self._create_optimizer()
 
-        os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(logdir, exist_ok=True)
-        self.writer = SummaryWriter(logdir)
+        self.ckpt = tf.train.Checkpoint(step=self.global_step, optimizer=self.optimizer, model=self.net)
+        self.manager = tf.train.CheckpointManager(self.ckpt, directory=output_dir, max_to_keep=100)
+        self.writer = tf.summary.create_file_writer(logdir)
 
     def _create_optimizer(self):
         if cfg.TRAIN.SOLVER == "Adam":
-            return torch.optim.Adam(self.net.parameters(), lr=self.lr, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
+            return tf.keras.optimizers.Adam(learning_rate=self.lr)
         if cfg.TRAIN.SOLVER == "RMS":
-            return torch.optim.RMSprop(self.net.parameters(), lr=self.lr, weight_decay=cfg.TRAIN.WEIGHT_DECAY)
-        return torch.optim.SGD(
-            self.net.parameters(),
-            lr=self.lr,
-            momentum=cfg.TRAIN.MOMENTUM,
-            weight_decay=cfg.TRAIN.WEIGHT_DECAY,
-        )
+            return tf.keras.optimizers.RMSprop(learning_rate=self.lr)
+        return tf.keras.optimizers.SGD(learning_rate=self.lr, momentum=cfg.TRAIN.MOMENTUM)
 
     def _get_lr(self):
-        return float(self.optimizer.param_groups[0]["lr"])
+        try:
+            return float(tf.keras.backend.get_value(self.optimizer.learning_rate))
+        except Exception:
+            return float(self.optimizer.learning_rate)
 
     def _set_lr(self, value):
         value = float(value)
         self.lr = value
-        for group in self.optimizer.param_groups:
-            group["lr"] = value
+        try:
+            self.optimizer.learning_rate.assign(value)
+        except Exception:
+            self.optimizer.learning_rate = value
 
-    def _checkpoint_path(self, step):
-        return osp.join(self.output_dir, "ctpn_iter_{:07d}.pth".format(step))
-
-    def _find_latest_checkpoint(self):
-        files = glob.glob(osp.join(self.output_dir, "ctpn_iter_*.pth"))
-        if not files:
-            return None, 0
-
-        def _extract_step(path):
-            m = re.search(r"ctpn_iter_(\d+)\.pth$", osp.basename(path))
-            return int(m.group(1)) if m else -1
-
-        files.sort(key=_extract_step)
-        latest = files[-1]
-        return latest, _extract_step(latest)
+    def _ensure_model_built(self):
+        _ = self.net(tf.zeros([1, 64, 64, 3], dtype=tf.float32), training=False)
 
     def snapshot(self):
-        save_path = self._checkpoint_path(self.global_step)
-        torch.save(
-            {
-                "step": self.global_step,
-                "model": self.net.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-            },
-            save_path,
-        )
+        save_path = self.manager.save(checkpoint_number=int(self.global_step.numpy()))
         print("Wrote snapshot to: {:s}".format(save_path))
 
     def train_model(self, max_iters, restore=False):
         data_layer = get_data_layer(self.roidb, self.imdb.num_classes)
-        self.net.train()
+        self._ensure_model_built()
 
         if self.pretrained_model is not None and not restore:
             try:
@@ -114,17 +80,14 @@ class SolverWrapper(object):
                 raise Exception("Check your pretrained model {:s}: {}".format(self.pretrained_model, e)) from e
 
         if restore:
-            latest_ckpt, latest_step = self._find_latest_checkpoint()
+            latest_ckpt = self.manager.latest_checkpoint
             if latest_ckpt is None:
                 raise RuntimeError("No checkpoint found under {}".format(self.output_dir))
             print("Restoring from {}...".format(latest_ckpt), end=" ")
-            payload = torch.load(latest_ckpt, map_location=self.device)
-            self.net.load_state_dict(payload["model"])
-            self.optimizer.load_state_dict(payload["optimizer"])
-            self.global_step = int(payload.get("step", latest_step))
+            self.ckpt.restore(latest_ckpt).expect_partial()
             print("done")
 
-        restore_iter = int(self.global_step)
+        restore_iter = int(self.global_step.numpy())
         if restore_iter >= max_iters:
             print("restore_iter ({}) >= max_iters ({}), skipping training".format(restore_iter, max_iters))
             return
@@ -141,24 +104,28 @@ class SolverWrapper(object):
 
             blobs = data_layer.forward()
 
-            images = torch.from_numpy(blobs["data"]).to(device=self.device, dtype=torch.float32)
-            im_info = torch.from_numpy(blobs["im_info"]).to(device=self.device, dtype=torch.float32)
-            gt_boxes = torch.from_numpy(blobs["gt_boxes"]).to(device=self.device, dtype=torch.float32)
-            gt_ishard = torch.from_numpy(blobs["gt_ishard"]).to(device=self.device, dtype=torch.int32)
-            dontcare_areas = torch.from_numpy(blobs["dontcare_areas"]).to(device=self.device, dtype=torch.float32)
+            images = tf.convert_to_tensor(blobs["data"], dtype=tf.float32)
+            im_info = tf.convert_to_tensor(blobs["im_info"], dtype=tf.float32)
+            gt_boxes = tf.convert_to_tensor(blobs["gt_boxes"], dtype=tf.float32)
+            gt_ishard = tf.convert_to_tensor(blobs["gt_ishard"], dtype=tf.int32)
+            dontcare_areas = tf.convert_to_tensor(blobs["dontcare_areas"], dtype=tf.float32)
 
-            self.optimizer.zero_grad(set_to_none=True)
-            losses = self.net.compute_losses(images, im_info, gt_boxes, gt_ishard, dontcare_areas)
-            losses["total_loss"].backward()
-            clip_grad_norm_(self.net.parameters(), 10.0)
-            self.optimizer.step()
-            self.global_step += 1
+            with tf.GradientTape() as tape:
+                losses = self.net.compute_losses(images, im_info, gt_boxes, gt_ishard, dontcare_areas)
 
-            self.writer.add_scalar("rpn_reg_loss", float(losses["rpn_loss_box"].detach().cpu().item()), self.global_step)
-            self.writer.add_scalar("rpn_cls_loss", float(losses["rpn_cross_entropy"].detach().cpu().item()), self.global_step)
-            self.writer.add_scalar("model_loss", float(losses["model_loss"].detach().cpu().item()), self.global_step)
-            self.writer.add_scalar("total_loss", float(losses["total_loss"].detach().cpu().item()), self.global_step)
-            self.writer.add_scalar("lr", self._get_lr(), self.global_step)
+            tvars = self.net.trainable_variables
+            grads = tape.gradient(losses["total_loss"], tvars)
+            grads, _ = tf.clip_by_global_norm(grads, 10.0)
+            grads_and_vars = [(g, v) for g, v in zip(grads, tvars) if g is not None]
+            self.optimizer.apply_gradients(grads_and_vars)
+            self.global_step.assign_add(1)
+
+            with self.writer.as_default():
+                tf.summary.scalar("rpn_reg_loss", losses["rpn_loss_box"], step=self.global_step)
+                tf.summary.scalar("rpn_cls_loss", losses["rpn_cross_entropy"], step=self.global_step)
+                tf.summary.scalar("model_loss", losses["model_loss"], step=self.global_step)
+                tf.summary.scalar("total_loss", losses["total_loss"], step=self.global_step)
+                tf.summary.scalar("lr", self._get_lr(), step=self.global_step)
 
             _diff_time = timer.toc(average=False)
 
@@ -169,10 +136,10 @@ class SolverWrapper(object):
                     % (
                         iter,
                         max_iters,
-                        float(losses["total_loss"].detach().cpu().item()),
-                        float(losses["model_loss"].detach().cpu().item()),
-                        float(losses["rpn_cross_entropy"].detach().cpu().item()),
-                        float(losses["rpn_loss_box"].detach().cpu().item()),
+                        float(losses["total_loss"].numpy()),
+                        float(losses["model_loss"].numpy()),
+                        float(losses["rpn_cross_entropy"].numpy()),
+                        float(losses["rpn_loss_box"].numpy()),
                         self._get_lr(),
                     )
                 )
@@ -184,9 +151,6 @@ class SolverWrapper(object):
 
         if last_snapshot_iter != iter:
             self.snapshot()
-
-        self.writer.flush()
-        self.writer.close()
 
 
 def get_training_roidb(imdb):
@@ -212,26 +176,8 @@ def get_data_layer(roidb, num_classes):
     return RoIDataLayer(roidb, num_classes)
 
 
-def train_net(
-    network,
-    imdb,
-    roidb,
-    output_dir,
-    log_dir,
-    pretrained_model=None,
-    max_iters=40000,
-    restore=False,
-    require_cuda=False,
-):
-    sw = SolverWrapper(
-        network,
-        imdb,
-        roidb,
-        output_dir,
-        logdir=log_dir,
-        pretrained_model=pretrained_model,
-        require_cuda=require_cuda,
-    )
+def train_net(network, imdb, roidb, output_dir, log_dir, pretrained_model=None, max_iters=40000, restore=False):
+    sw = SolverWrapper(network, imdb, roidb, output_dir, logdir=log_dir, pretrained_model=pretrained_model)
     print("Solving...")
     sw.train_model(max_iters, restore=restore)
     print("done solving")

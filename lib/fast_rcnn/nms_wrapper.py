@@ -1,29 +1,31 @@
 import numpy as np
 from .config import cfg
-has_gpu_nms = False
-has_cython_nms = False
-
+pure_python_nms = False
+gpu_nms = None
+cython_nms = None
 try:
-    from lib.utils.gpu_nms import gpu_nms
-    has_gpu_nms = True
+    from ..utils.gpu_nms import gpu_nms
 except ImportError:
     gpu_nms = None
 
 try:
     from ..utils.cython_nms import nms as cython_nms
-    has_cython_nms = True
 except ImportError:
     cython_nms = None
 
-pure_python_nms = not has_gpu_nms and not has_cython_nms
+if gpu_nms is None and cython_nms is None:
+    pure_python_nms = True
 
 
 def nms(dets, thresh):
     if dets.shape[0] == 0:
         return []
-    if cfg.USE_GPU_NMS and has_gpu_nms:
+    if pure_python_nms:
+        # print("Fall back to pure python nms")
+        return py_cpu_nms(dets, thresh)
+    if cfg.USE_GPU_NMS and gpu_nms is not None:
         return gpu_nms(dets, thresh, device_id=cfg.GPU_ID)
-    if has_cython_nms:
+    if cython_nms is not None:
         return cython_nms(dets, thresh)
     return py_cpu_nms(dets, thresh)
 

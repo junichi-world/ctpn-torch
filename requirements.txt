@@ -1,10 +1,10 @@
 # Python 3.10/3.11
+# Linux/WSL (GPU capable): installs TensorFlow and CUDA/cuDNN runtime wheels.
+tensorflow[and-cuda]==2.16.1; platform_system == "Linux" and python_version >= "3.10" and python_version < "3.12"
+# Fallback for non-Linux environments.
+tensorflow==2.16.1; platform_system != "Linux" and python_version >= "3.10" and python_version < "3.12"
+keras>=3.0,<4.0
 numpy>=1.26,<2.0
-
-# Deep Learning
-torch>=2.2
-torchvision>=0.17
-tensorboard>=2.14
 
 opencv-python>=4.8
 Pillow>=10.0
