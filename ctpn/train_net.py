@@ -14,7 +14,6 @@ from lib.fast_rcnn.config import cfg
 
 if __name__ == '__main__':
     cfg_from_file('ctpn/text.yml')
-    cfg.TRAIN.IMS_PER_BATCH = 1 
     if not torch.cuda.is_available():
         raise RuntimeError(
             'CUDA is not available. GPU学習にはCUDA対応版PyTorchが必要です。'

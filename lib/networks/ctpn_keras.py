@@ -79,43 +79,65 @@ class CTPNModel(nn.Module):
             "lstm_o": lstm_o,
         }
 
-    def _anchor_targets(self, rpn_cls_score, gt_boxes, gt_ishard, dontcare_areas, im_info):
+    def _anchor_targets(self, rpn_cls_score, gt_boxes_list, gt_ishard_list, dontcare_areas_list, im_info):
         feat_h = rpn_cls_score.shape[1]
         feat_w = rpn_cls_score.shape[2]
+        batch_size = rpn_cls_score.shape[0]
         device = rpn_cls_score.device
 
         score_np = rpn_cls_score.detach().cpu().numpy()
-        boxes_np = gt_boxes.detach().cpu().numpy()
-        ishard_np = gt_ishard.detach().cpu().numpy()
-        dontcare_np = dontcare_areas.detach().cpu().numpy()
         info_np = im_info.detach().cpu().numpy()
 
-        rpn_labels, rpn_bbox_targets, rpn_bbox_inside, rpn_bbox_outside = anchor_target_layer(
-            score_np,
-            boxes_np,
-            ishard_np,
-            dontcare_np,
-            info_np,
-            _feat_stride=[16],
-            anchor_scales=cfg.ANCHOR_SCALES,
-        )
+        labels_list = []
+        targets_list = []
+        inside_list = []
+        outside_list = []
 
-        rpn_labels = torch.from_numpy(rpn_labels).to(device=device, dtype=torch.float32).view(1, feat_h, feat_w, self.num_anchors)
-        rpn_bbox_targets = (
-            torch.from_numpy(rpn_bbox_targets)
-            .to(device=device, dtype=torch.float32)
-            .view(1, feat_h, feat_w, self.num_anchors * 4)
-        )
-        rpn_bbox_inside = (
-            torch.from_numpy(rpn_bbox_inside)
-            .to(device=device, dtype=torch.float32)
-            .view(1, feat_h, feat_w, self.num_anchors * 4)
-        )
-        rpn_bbox_outside = (
-            torch.from_numpy(rpn_bbox_outside)
-            .to(device=device, dtype=torch.float32)
-            .view(1, feat_h, feat_w, self.num_anchors * 4)
-        )
+        for i in range(batch_size):
+            boxes_np = np.asarray(gt_boxes_list[i], dtype=np.float32)
+            ishard_np = np.asarray(gt_ishard_list[i], dtype=np.int32)
+            dontcare_np = np.asarray(dontcare_areas_list[i], dtype=np.float32)
+
+            if boxes_np.ndim != 2 or boxes_np.shape[1] != 5:
+                boxes_np = np.zeros((0, 5), dtype=np.float32)
+            if ishard_np.ndim != 1:
+                ishard_np = np.zeros((boxes_np.shape[0],), dtype=np.int32)
+            if dontcare_np.ndim != 2 or dontcare_np.shape[1] != 4:
+                dontcare_np = np.zeros((0, 4), dtype=np.float32)
+
+            rpn_labels_i, rpn_bbox_targets_i, rpn_bbox_inside_i, rpn_bbox_outside_i = anchor_target_layer(
+                score_np[i:i + 1],
+                boxes_np,
+                ishard_np,
+                dontcare_np,
+                info_np[i:i + 1],
+                _feat_stride=[16],
+                anchor_scales=cfg.ANCHOR_SCALES,
+            )
+
+            labels_list.append(
+                torch.from_numpy(rpn_labels_i).to(device=device, dtype=torch.float32).view(feat_h, feat_w, self.num_anchors)
+            )
+            targets_list.append(
+                torch.from_numpy(rpn_bbox_targets_i)
+                .to(device=device, dtype=torch.float32)
+                .view(feat_h, feat_w, self.num_anchors * 4)
+            )
+            inside_list.append(
+                torch.from_numpy(rpn_bbox_inside_i)
+                .to(device=device, dtype=torch.float32)
+                .view(feat_h, feat_w, self.num_anchors * 4)
+            )
+            outside_list.append(
+                torch.from_numpy(rpn_bbox_outside_i)
+                .to(device=device, dtype=torch.float32)
+                .view(feat_h, feat_w, self.num_anchors * 4)
+            )
+
+        rpn_labels = torch.stack(labels_list, dim=0)
+        rpn_bbox_targets = torch.stack(targets_list, dim=0)
+        rpn_bbox_inside = torch.stack(inside_list, dim=0)
+        rpn_bbox_outside = torch.stack(outside_list, dim=0)
         return rpn_labels, rpn_bbox_targets, rpn_bbox_inside, rpn_bbox_outside
 
     def compute_losses(self, images, im_info, gt_boxes, gt_ishard, dontcare_areas):

@@ -143,9 +143,9 @@ class SolverWrapper(object):
 
             images = torch.from_numpy(blobs["data"]).to(device=self.device, dtype=torch.float32)
             im_info = torch.from_numpy(blobs["im_info"]).to(device=self.device, dtype=torch.float32)
-            gt_boxes = torch.from_numpy(blobs["gt_boxes"]).to(device=self.device, dtype=torch.float32)
-            gt_ishard = torch.from_numpy(blobs["gt_ishard"]).to(device=self.device, dtype=torch.int32)
-            dontcare_areas = torch.from_numpy(blobs["dontcare_areas"]).to(device=self.device, dtype=torch.float32)
+            gt_boxes = blobs["gt_boxes"]
+            gt_ishard = blobs["gt_ishard"]
+            dontcare_areas = blobs["dontcare_areas"]
 
             self.optimizer.zero_grad(set_to_none=True)
             losses = self.net.compute_losses(images, im_info, gt_boxes, gt_ishard, dontcare_areas)

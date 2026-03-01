@@ -18,28 +18,44 @@ def get_minibatch(roidb, num_classes):
     fg_rois_per_image = np.round(cfg.TRAIN.FG_FRACTION * rois_per_image)
 
     # Get the input image blob, formatted for caffe
-    im_blob, im_scales = _get_image_blob(roidb, random_scale_inds)
+    im_blob, im_scales, im_shapes = _get_image_blob(roidb, random_scale_inds)
 
     blobs = {'data': im_blob}
 
     if cfg.TRAIN.HAS_RPN:
-        assert len(im_scales) == 1, "Single batch only"
-        assert len(roidb) == 1, "Single batch only"
-        # gt boxes: (x1, y1, x2, y2, cls)
-        gt_inds = np.where(roidb[0]['gt_classes'] != 0)[0]
-        gt_boxes = np.empty((len(gt_inds), 5), dtype=np.float32)
-        gt_boxes[:, 0:4] = roidb[0]['boxes'][gt_inds, :] * im_scales[0]
-        gt_boxes[:, 4] = roidb[0]['gt_classes'][gt_inds]
-        blobs['gt_boxes'] = gt_boxes
-        blobs['gt_ishard'] = roidb[0]['gt_ishard'][gt_inds]  \
-            if 'gt_ishard' in roidb[0] else np.zeros(gt_inds.size, dtype=int)
-        # blobs['gt_ishard'] = roidb[0]['gt_ishard'][gt_inds]
-        blobs['dontcare_areas'] = roidb[0]['dontcare_areas'] * im_scales[0] \
-            if 'dontcare_areas' in roidb[0] else np.zeros([0, 4], dtype=float)
-        blobs['im_info'] = np.array(
-            [[im_blob.shape[1], im_blob.shape[2], im_scales[0]]],
-            dtype=np.float32)
-        blobs['im_name'] = os.path.basename(roidb[0]['image'])
+        gt_boxes_list = []
+        gt_ishard_list = []
+        dontcare_areas_list = []
+        im_names = []
+        im_info = []
+
+        for i in range(num_images):
+            gt_inds = np.where(roidb[i]['gt_classes'] != 0)[0]
+            gt_boxes = np.empty((len(gt_inds), 5), dtype=np.float32)
+            gt_boxes[:, 0:4] = roidb[i]['boxes'][gt_inds, :] * im_scales[i]
+            gt_boxes[:, 4] = roidb[i]['gt_classes'][gt_inds]
+            gt_boxes_list.append(gt_boxes)
+
+            if 'gt_ishard' in roidb[i]:
+                gt_ishard = roidb[i]['gt_ishard'][gt_inds].astype(np.int32, copy=False)
+            else:
+                gt_ishard = np.zeros(gt_inds.size, dtype=np.int32)
+            gt_ishard_list.append(gt_ishard)
+
+            if 'dontcare_areas' in roidb[i]:
+                dontcare = (roidb[i]['dontcare_areas'] * im_scales[i]).astype(np.float32, copy=False)
+            else:
+                dontcare = np.zeros((0, 4), dtype=np.float32)
+            dontcare_areas_list.append(dontcare)
+
+            im_info.append([im_shapes[i][0], im_shapes[i][1], im_scales[i]])
+            im_names.append(os.path.basename(roidb[i]['image']))
+
+        blobs['gt_boxes'] = gt_boxes_list
+        blobs['gt_ishard'] = gt_ishard_list
+        blobs['dontcare_areas'] = dontcare_areas_list
+        blobs['im_info'] = np.array(im_info, dtype=np.float32)
+        blobs['im_name'] = im_names
 
     else: # not using RPN
         # Now, build the region of interest and label blobs
@@ -132,6 +148,7 @@ def _get_image_blob(roidb, scale_inds):
     num_images = len(roidb)
     processed_ims = []
     im_scales = []
+    im_shapes = []
     for i in range(num_images):
         im = cv2.imread(roidb[i]['image'])
         if roidb[i]['flipped']:
@@ -141,11 +158,12 @@ def _get_image_blob(roidb, scale_inds):
                                         cfg.TRAIN.MAX_SIZE)
         im_scales.append(im_scale)
         processed_ims.append(im)
+        im_shapes.append((im.shape[0], im.shape[1]))
 
     # Create a blob to hold the input images
     blob = im_list_to_blob(processed_ims)
 
-    return blob, im_scales
+    return blob, im_scales, im_shapes
 
 def _project_im_rois(im_rois, im_scale_factor):
     """Project image RoIs into the rescaled training image."""
