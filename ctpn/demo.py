@@ -2,12 +2,13 @@ from __future__ import print_function
 
 import glob
 import os
+import re
 import shutil
 import sys
 
 import cv2
 import numpy as np
-import tensorflow as tf
+import torch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -19,32 +20,6 @@ from lib.networks.factory import get_network
 from lib.text_connector.detectors import TextDetector
 from lib.text_connector.text_connect_cfg import Config as TextLineCfg
 from lib.utils.timer import Timer
-from ctpn.tf_runtime import configure_tensorflow_runtime
-
-
-def find_latest_checkpoint(checkpoint_path):
-    candidates = []
-    if os.path.isabs(checkpoint_path):
-        candidates.append(checkpoint_path)
-    else:
-        candidates.extend(
-            [
-                checkpoint_path,
-                os.path.join(PROJECT_ROOT, checkpoint_path),
-                os.path.join(PROJECT_ROOT, "ctpn", checkpoint_path),
-            ]
-        )
-
-    seen = set()
-    for candidate in candidates:
-        norm = os.path.normpath(candidate)
-        if norm in seen:
-            continue
-        seen.add(norm)
-        latest = tf.train.latest_checkpoint(norm)
-        if latest is not None:
-            return latest, norm
-    return None, checkpoint_path
 
 
 def resize_im(im, scale, max_scale=None):
@@ -85,6 +60,22 @@ def draw_boxes(img, image_name, boxes, scale):
     cv2.imwrite(os.path.join("data", "results", base_name), img)
 
 
+def _find_latest_checkpoint(directory):
+    if not os.path.isdir(directory):
+        return None
+
+    files = glob.glob(os.path.join(directory, "ctpn_iter_*.pth"))
+    if not files:
+        return None
+
+    def _step(path):
+        m = re.search(r"ctpn_iter_(\d+)\.pth$", os.path.basename(path))
+        return int(m.group(1)) if m else -1
+
+    files.sort(key=_step)
+    return files[-1]
+
+
 def ctpn(net, image_name):
     timer = Timer()
     timer.tic()
@@ -99,24 +90,23 @@ def ctpn(net, image_name):
 
 
 if __name__ == "__main__":
-    # Enables TensorFlow GPU memory growth via ctpn.tf_runtime.configure_tensorflow_runtime().
-    configure_tensorflow_runtime()
-
     if os.path.exists("data/results/"):
         shutil.rmtree("data/results/")
-    os.makedirs("data/results/")
+    os.makedirs("data/results")
 
     cfg_from_file("ctpn/text.yml")
     net = get_network("VGGnet_test")
-    _ = net(tf.zeros([1, 64, 64, 3], dtype=tf.float32), training=False)
+    device = torch.device(f"cuda:{cfg.GPU_ID}" if torch.cuda.is_available() else "cpu")
+    net.to(device)
 
     print(("Loading network {:s}... ".format("VGGnet_test")), end=" ")
-    ckpt = tf.train.Checkpoint(model=net)
-    latest, resolved_ckpt_dir = find_latest_checkpoint(cfg.TEST.checkpoints_path)
+    latest = _find_latest_checkpoint(cfg.TEST.checkpoints_path)
     if latest is None:
         raise RuntimeError("No checkpoint found under {}".format(cfg.TEST.checkpoints_path))
-    print("Restoring from {} (resolved from {})...".format(latest, resolved_ckpt_dir), end=" ")
-    ckpt.restore(latest).expect_partial()
+    print("Restoring from {}...".format(latest), end=" ")
+    payload = torch.load(latest, map_location=device)
+    net.load_state_dict(payload["model"])
+    net.eval()
     print("done")
 
     im = 128 * np.ones((300, 300, 3), dtype=np.uint8)

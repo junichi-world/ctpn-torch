@@ -7,7 +7,7 @@ import sys
 
 import cv2
 import numpy as np
-import tensorflow as tf
+import torch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -18,7 +18,6 @@ from lib.fast_rcnn.test import _get_blobs
 from lib.rpn_msr.proposal_layer_tf import proposal_layer
 from lib.text_connector.detectors import TextDetector
 from lib.text_connector.text_connect_cfg import Config as TextLineCfg
-from ctpn.tf_runtime import configure_tensorflow_runtime
 
 
 def resize_im(im, scale, max_scale=None):
@@ -59,22 +58,21 @@ def draw_boxes(img, image_name, boxes, scale):
 
 
 if __name__ == "__main__":
-    configure_tensorflow_runtime()
-
     if os.path.exists("data/results/"):
         shutil.rmtree("data/results/")
     os.makedirs("data/results/")
 
     cfg_from_file("ctpn/text.yml")
 
-    model_path = "data/ctpn_saved_model"
-    if not os.path.isdir(model_path):
+    model_path = "data/ctpn_torchscript.pt"
+    if not os.path.isfile(model_path):
         raise RuntimeError(
-            "SavedModel not found at {}. Run `python ctpn/generate_pb.py` first.".format(model_path)
+            "TorchScript model not found at {}. Run `python ctpn/generate_pb.py` first.".format(model_path)
         )
 
-    loaded = tf.saved_model.load(model_path)
-    infer = loaded.signatures["serving_default"]
+    device = torch.device(f"cuda:{cfg.GPU_ID}" if torch.cuda.is_available() else "cpu")
+    infer = torch.jit.load(model_path, map_location=device)
+    infer.eval()
 
     im_names = glob.glob(os.path.join(cfg.DATA_DIR, "demo", "*.png")) + glob.glob(
         os.path.join(cfg.DATA_DIR, "demo", "*.jpg")
@@ -89,14 +87,19 @@ if __name__ == "__main__":
         im_blob = blobs["data"]
         blobs["im_info"] = np.array([[im_blob.shape[1], im_blob.shape[2], im_scales[0]]], dtype=np.float32)
 
-        preds = infer(
-            images=tf.convert_to_tensor(blobs["data"], dtype=tf.float32),
-            im_info=tf.convert_to_tensor(blobs["im_info"], dtype=tf.float32),
-        )
-        cls_prob = preds["rpn_cls_prob_reshape"].numpy()
-        box_pred = preds["rpn_bbox_pred"].numpy()
+        with torch.no_grad():
+            cls_prob, box_pred = infer(
+                torch.from_numpy(blobs["data"]).to(device=device, dtype=torch.float32),
+                torch.from_numpy(blobs["im_info"]).to(device=device, dtype=torch.float32),
+            )
 
-        rois, _ = proposal_layer(cls_prob, box_pred, blobs["im_info"], "TEST", anchor_scales=cfg.ANCHOR_SCALES)
+        rois, _ = proposal_layer(
+            cls_prob.detach().cpu().numpy(),
+            box_pred.detach().cpu().numpy(),
+            blobs["im_info"],
+            "TEST",
+            anchor_scales=cfg.ANCHOR_SCALES,
+        )
         scores = rois[:, 0]
         boxes = rois[:, 1:5] / im_scales[0]
         textdetector = TextDetector()

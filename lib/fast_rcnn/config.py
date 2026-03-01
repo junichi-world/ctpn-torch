@@ -14,7 +14,7 @@ __C.GPU_ID = 0
 __C.IS_RPN = True
 __C.ANCHOR_SCALES = [16]
 __C.NCLASSES = 2
-__C.USE_GPU_NMS = False
+__C.USE_GPU_NMS = True
 # multiscale training and testing
 __C.IS_MULTISCALE = False
 __C.IS_EXTRAPOLATING = True
@@ -145,7 +145,7 @@ __C.TRAIN.RPN_POSITIVE_WEIGHT = -1.0
 #
 
 __C.TEST = edict()
-__C.TEST.checkpoints_path = osp.join('ctpn', 'checkpoints')
+__C.TEST.checkpoints_path = "checkpoints/"
 __C.TEST.DETECT_MODE = "H"#H/O for horizontal/oriented mode
 # Scales to use during testing (can list multiple scales)
 # Each scale is the pixel size of an image's shortest side
@@ -223,7 +223,7 @@ __C.EXP_DIR = 'default'
 __C.LOG_DIR = 'default'
 
 # Use GPU implementation of non-maximum suppression
-__C.USE_GPU_NMS = False
+__C.USE_GPU_NMS = True
 
 
 
@@ -265,6 +265,15 @@ def _merge_a_into_b(a, b):
         if k not in b:
             raise KeyError('{} is not a valid config key'.format(k))
 
+        # recursively merge nested config dicts
+        if isinstance(b[k], edict):
+            if not isinstance(v, (edict, dict)):
+                raise ValueError(
+                    'Type mismatch ({} vs. {}) for config key: {}'.format(type(b[k]), type(v), k)
+                )
+            _merge_a_into_b(edict(v), b[k])
+            continue
+
         # the types must match, too
         old_type = type(b[k])
         if old_type is not type(v):
@@ -282,16 +291,7 @@ def _merge_a_into_b(a, b):
                 raise ValueError(('Type mismatch ({} vs. {}) '
                                 'for config key: {}').format(type(b[k]),
                                                             type(v), k))
-
-        # recursively merge dict-like configs
-        if type(v) is edict:
-            try:
-                _merge_a_into_b(a[k], b[k])
-            except Exception:
-                print('Error under config key: {}'.format(k))
-                raise
-        else:
-            b[k] = v
+        b[k] = v
 
 def cfg_from_file(filename):
     """Load a config file and merge it into the default options."""

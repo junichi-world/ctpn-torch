@@ -1,6 +1,6 @@
 # text-detection-ctpn
 
-text detection mainly based on ctpn (connectionist text proposal network). It is implemented in tensorflow. I use id card detect as an example to demonstrate the results, but it should be noticing that this model can be used in almost every horizontal scene text detection task. The origin paper can be found [here](https://arxiv.org/abs/1609.03605). Also, the origin repo in caffe can be found in [here](https://github.com/tianzhi0549/CTPN). For more detail about the paper and code, see this [blog](http://slade-ruan.me/2017/10/22/text-detection-ctpn/). If you got any questions, check the issue first, if the problem persists, open a new issue.
+text detection mainly based on ctpn (connectionist text proposal network). It is implemented in PyTorch. I use id card detect as an example to demonstrate the results, but it should be noticing that this model can be used in almost every horizontal scene text detection task. The origin paper can be found [here](https://arxiv.org/abs/1609.03605). Also, the origin repo in caffe can be found in [here](https://github.com/tianzhi0549/CTPN). For more detail about the paper and code, see this [blog](http://slade-ruan.me/2017/10/22/text-detection-ctpn/). If you got any questions, check the issue first, if the problem persists, open a new issue.
 ***
 # roadmap
 - [x] freeze the graph for convenient inference
@@ -10,69 +10,17 @@ text detection mainly based on ctpn (connectionist text proposal network). It is
 - [x] BLSTM
 ***
 # demo
-- for a quick demo, use the SavedModel-based `demo_pb.py` inference entrypoint.
+- for a quick demo,you don't have to build the library, simpely use demo.py for inference.
 - first, git clone git@github.com:eragonruan/text-detection-ctpn.git --depth=1
-- ensure there is a checkpoint under `ctpn/checkpoints` (or set `TEST.checkpoints_path` in `ctpn/text.yml`)
-- export SavedModel by running:
+- put your images in data/demo, the results will be saved in data/results, and run demo in the root 
+```shell
+python ./ctpn/demo.py
+```
+- if you want a serialized inference module, run:
 ```shell
 python ./ctpn/generate_pb.py
-```
-- put your images in `data/demo`, then run:
-```shell
 python ./ctpn/demo_pb.py
 ```
-***
-# portable setup (docker / other machine)
-- this repository alone is not enough for training or full inference; you also need runtime dependencies and model/data files.
-- included in this repo now:
-  - `Dockerfile` (GPU-ready base image path can be overridden)
-  - `scripts/setup_env.sh` (installs Python deps and builds `lib/utils` extensions)
-  - `scripts/run_demo.sh`, `scripts/run_train.sh`
-- not included (you must place them manually):
-  - training dataset in VOC layout: `data/VOCdevkit2007/VOC2007/...`
-  - VGG pretrained weights: `data/pretrain/VGG_imagenet.npy`
-  - checkpoints for inference (either `ctpn/checkpoints/` or `output/...`)
-
-## run with docker (gpu)
-- build image:
-```shell
-docker build -t ctpn-tf-gpu .
-```
-- run container with GPU and mount your project:
-```shell
-docker run --rm -it --gpus all \
-  -v "$(pwd)":/workspace/text-detection-ctpn \
-  -w /workspace/text-detection-ctpn \
-  ctpn-tf-gpu bash
-```
-- inside container, initialize once (rebuilds `lib/utils` against the current Python):
-```shell
-./scripts/setup_env.sh
-```
-- run demo:
-```shell
-./scripts/run_demo.sh
-```
-- run training:
-```shell
-./scripts/run_train.sh
-```
-
-## run without docker (wsl/linux)
-- use Python 3.10/3.11 and install TensorFlow (GPU or CPU) for your environment.
-- then run:
-```shell
-python -m pip install -r requirements.txt
-python -m pip install --force-reinstall "numpy<2"
-./scripts/setup_env.sh --skip-pip
-```
-- `numpy<2` is important for compatibility with many TensorFlow builds used by this project.
-
-## switching demo checkpoint
-- `ctpn/demo.py` reads `TEST.checkpoints_path` from `ctpn/text.yml` and loads the latest checkpoint in that directory.
-- examples:
-  - bundled checkpoint: `checkpoints/`
-  - your trained model: `output/ctpn_end2end/voc_2007_trainval`
 ***
 # parameters
 there are some parameters you may need to modify according to your requirement, you can find them in ctpn/text.yml
@@ -82,7 +30,7 @@ there are some parameters you may need to modify according to your requirement, 
 ***
 # training
 ## setup
-- requirements: python3.10/3.11, tensorflow==2.16.1, cython, opencv-python, easydict
+- requirements: python3, pytorch, torchvision, cython, opencv-python, easydict
 - if you do not have a gpu device,follow here to [setup](https://github.com/eragonruan/text-detection-ctpn/issues/43)
 - if you have a gpu device, build the library by
 ```shell
